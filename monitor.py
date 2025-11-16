@@ -148,6 +148,8 @@ MONITOR_FORCE_SYNC_COUNT = 0
 
 MONITOR_SOMETHING_WRITTEN_OR_ERROR = False
 
+PREV_WORKAROUND_LOCATION: dict = {}
+
 
 def writeln(filename: str, string: str) -> None:
     """append line at monitor text file with end of line character"""
@@ -418,6 +420,18 @@ def get_odometer_str(vehicle: Vehicle) -> str:
     return odometer_str
 
 
+def get_geocode(vehicle: Vehicle) -> str:
+    """get_geocode"""
+    geocode = ""
+    if USE_GEOCODE:
+        if len(vehicle.geocode) > 0:
+            # replace comma by semicolon for easier splitting
+            geocode_name = vehicle.geocode[0]
+            if geocode_name is not None and geocode_name != "":
+                geocode = geocode_name.replace(",", ";")
+    return geocode
+
+
 def handle_one_vehicle(
     manager: VehicleManager, vehicle_id: str, number_of_vehicles: int
 ) -> bool:
@@ -459,25 +473,64 @@ def handle_one_vehicle(
         logging.info(
             f"Forced sync, new odometer=[{odometer_str}], old_odometer=[{list_prev_line[5].strip()}]"  # noqa
         )
-        logging.info(f"org={vehicle.geocode}")  # noqa
+        _ = D and dbg(f"org={vehicle.geocode}")
         MANAGER.force_refresh_all_vehicles_states()  # forced sync always
         MANAGER.update_all_vehicles_with_cached_state()  # needed >= 2.0.0
         vehicle = MANAGER.vehicles[vehicle_id]
-        logging.info(f"upd={vehicle.geocode}")  # noqa
+        _ = D and dbg(f"upd={vehicle.geocode}")
         _ = D and dbg(f"prev={prev_line}")
+        # Workaround: remember correct location,
+        # subsequent updates may be wrong, when same odometer
+        geocode_name = ""
+        geocode_address = ""
+        if USE_GEOCODE:
+            geocode = vehicle.geocode
+            geocode_name = geocode[0]
+            geocode_address = geocode[1]
+        PREV_WORKAROUND_LOCATION[vehicle.id] = {
+            "odometer": vehicle.odometer,
+            "longitude": get_safe_float(vehicle.location_longitude),
+            "latitude": get_safe_float(vehicle.location_latitude),
+            "last_timestamp": vehicle._location_last_set_time,  # pylint:disable=protected-access  # noqa
+            "geocode_name": geocode_name,
+            "geocode_address": geocode_address,
+        }
+        _ = D and dbg(f"Remember location: {PREV_WORKAROUND_LOCATION[vehicle.id]}")
         # newest odometer, keep last_updated_at, because force sync changes the latter
         odometer_str = get_odometer_str(vehicle)
 
-    geocode = ""
-    if USE_GEOCODE:
-        if len(vehicle.geocode) > 0:
-            # replace comma by semicolon for easier splitting
-            geocode_name = vehicle.geocode[0]
-            if geocode_name is not None and geocode_name != "":
-                geocode = geocode_name.replace(",", ";")
+    if (
+        MONITOR_INFINITE
+        and MONITOR_FORCE_SYNC_WHEN_ODOMETER_DIFFERENT_LOCATION_WORKAROUND
+        and MONITOR_FORCE_SYNC_COUNT < MONITOR_FORCE_SYNC_MAX_COUNT
+        and len(list_prev_line) == 11
+        and odometer_str == list_prev_line[5].strip()
+    ):  # odometer same, restore previous geocode, longitude and latitude
+        prev_workaround_location = PREV_WORKAROUND_LOCATION.get(vehicle.id)
+        if prev_workaround_location is not None:
+            latitude = prev_workaround_location["latitude"]
+            longitude = prev_workaround_location["longitude"]
+            if (
+                vehicle.location_latitude is None
+                or vehicle.location_latitude != latitude
+                or vehicle.location_longitude != longitude
+            ):
+                _ = D and dbg(
+                    f"Overruling location: {prev_workaround_location} iso {vehicle.odometer} {vehicle.location}"  # noqa
+                )
+                vehicle.location = (
+                    latitude,
+                    longitude,
+                    prev_workaround_location["last_timestamp"],
+                )
+                if USE_GEOCODE:
+                    geocode_name = prev_workaround_location["geocode_name"]
+                    geocode_address = prev_workaround_location["geocode_address"]
+                    vehicle.geocode = (geocode_name, geocode_address)
 
-    location_longitude = get_safe_float(vehicle.location_longitude)
+    geocode = get_geocode(vehicle)
     location_latitude = get_safe_float(vehicle.location_latitude)
+    location_longitude = get_safe_float(vehicle.location_longitude)
 
     ev_driving_range = to_int(f"{vehicle.ev_driving_range}")
 
@@ -663,6 +716,7 @@ def handle_vehicles(login: bool) -> bool:
                         )
                     except Exception as ex_one_vehicle:  # pylint: disable=broad-except
                         logging.error(f"handle_one_vehicle exception: {ex_one_vehicle}")
+                        traceback.print_exc()
                         error = True
                     if error:  # something gone wrong, exit vehicles loop
                         error_string = "Error occurred in handle_one_vehicle()"
