@@ -7,5 +7,5 @@ the standard way, it should be copied to `../..`. The Docker-Compose file
 csv-files go into the same directory. You may need to create them first, for 
 example with `touch monitor.csv`.
 
-If you are not familiar with Docker, see the [Docker Compose Quickstart|https://docs.docker.com/compose/gettingstarted/] for an introduction to `docker compose` and a guide to the commands required.
+If you are not familiar with Docker, see the [Docker Compose Quickstart](https://docs.docker.com/compose/gettingstarted/) for an introduction to `docker compose` and a guide to the commands required.
 
